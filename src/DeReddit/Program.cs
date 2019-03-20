@@ -20,7 +20,7 @@ namespace dereddit
             {
 
                 Program g = new Program();
-                Task startTask = g.StartForReal();
+                Task startTask = g.Go();
                 startTask.Wait();
             }
             catch (Exception ex)
@@ -39,7 +39,7 @@ namespace dereddit
         }
 
         private IConfigurationRoot Config = null;
-        private async Task StartForReal()
+        private async Task Go()
         {
             Config = Cfg.Config;
 
@@ -52,9 +52,7 @@ namespace dereddit
             }
             rand = new Random(BitConverter.ToInt32(new Guid().ToByteArray().Take(4).ToArray()));
             AuthenticatedFixture authFixture = new AuthenticatedFixture();
-
-            WebAgent agent = new WebAgent(authFixture.AccessToken);
-            Reddit reddit = new Reddit(agent, true);
+            Reddit reddit = new Reddit(authFixture.WebAgent, true);
 
             IEnumerable<string> srs = Config.GetSection("Places:SubReddits").GetChildren().ToList().Select(x => x.Value);
             foreach (string srn in srs)
@@ -69,9 +67,37 @@ namespace dereddit
                 while (await comments.MoveNext(CancellationToken.None))
                 {
                     Comment comment = comments.Current;
-                    Console.WriteLine(comment.AsString());
+
+                    if (comment.Vote == VotableThing.VoteType.Upvote && bool.Parse(Config["UnUpVote"]))
+                    {
+                        try
+                        {
+                            await comment.ClearVote();
+                            InterestingLog("un-up-vote +1 => 0  |  " + comment.AsString());
+                        }
+                        catch (Exception ex)
+                        {
+                            //can't check for archived without walking up the heirarchy...
+                            //InterestingLog($"failed to un-up-vote because {ex.Message}  |  {comment.AsString()}");
+                        }
+                    }
+                    else if (comment.Vote == VotableThing.VoteType.Downvote && bool.Parse(Config["UnDownVote"]))
+                    {
+                        try
+                        {
+                            await comment.ClearVote();
+                            InterestingLog("un-down-vote -1 => 0  |  " + comment.AsString());
+                        }
+                        catch (Exception ex)
+                        {
+                            //can't check for archived without walking up the heirarchy...
+                            //InterestingLog($"failed to un-down-vote because {ex.Message}  |  {comment.AsString()}");
+                        }
+                    }
+
                     if (IsInteresting(comment))
                     {
+                        
                         if (UserIsAuthor(comment))
                         {
                             try
@@ -132,7 +158,7 @@ namespace dereddit
                 while (await posts.MoveNext(CancellationToken.None))
                 {
                     Post post = posts.Current;
-                    Console.WriteLine(post.AsString());
+
                     if (IsInteresting(post))
                     {
                         if (UserIsAuthor(post))
@@ -186,6 +212,50 @@ namespace dereddit
                     Console.WriteLine();
                 }
             }
+            if (bool.Parse(Config["UnDownVote"]) || bool.Parse(Config["UnUpVote"]))
+            {
+                RedditUser user = await RedditUser.GetUserAsync(authFixture.WebAgent, authFixture.UserName);
+                if (bool.Parse(Config["UnDownVote"]))
+                {
+                    IAsyncEnumerator<Post> enumDisliked = user.GetDislikedPosts().GetEnumerator();
+                    while (await enumDisliked.MoveNext(CancellationToken.None))
+                    {
+                        Post disliked = enumDisliked.Current;
+                        if (!disliked.IsArchived)
+                        {
+                            try
+                            {
+                                await disliked.SetVoteAsync(VotableThing.VoteType.None);
+                                InterestingLog("un-down-vote -1 => 0  |  " + disliked.AsString());
+                            }
+                            catch (Exception ex)
+                            {
+                                InterestingLog($"failed to un-down-vote because {ex.Message}  |  {disliked.AsString()}");
+                            }
+                        }
+                    }
+                }
+                if (bool.Parse(Config["UnUpVote"]))
+                {
+                    IAsyncEnumerator<Post> enumLiked = user.GetLikedPosts().GetEnumerator();
+                    while (await enumLiked.MoveNext(CancellationToken.None))
+                    {
+                        Post liked = enumLiked.Current;
+                        if (!liked.IsArchived)
+                        {
+                            try
+                            {
+                                await liked.SetVoteAsync(VotableThing.VoteType.None);
+                            }
+                            catch (Exception ex)
+                            {
+                                InterestingLog($"failed to un-up-vote because {ex.Message}  |  {liked.AsString()}");
+                            }
+                            InterestingLog("un-up-vote +1 => 0  |  " + liked.AsString());
+                        }
+                    }
+                }
+            }
         }
 
         private class JunkPost
@@ -226,31 +296,37 @@ namespace dereddit
         }
         private void InterestingLog(InterestingPost pst)
         {
+            InterestingLog(pst.ToString());
+        }
+        private void InterestingLog(string inter)
+        {
+            inter = inter + (inter.EndsWith(Environment.NewLine) ? "" : Environment.NewLine);
             if (bool.Parse(Config["InterestingLog"]))
             {
-                File.AppendAllText(FpInterestingLog, pst.ToString() + Environment.NewLine);
+                File.AppendAllText(FpInterestingLog, inter);
             }
+            Console.Write($"INTERESTING: {inter}");
+        }
+        private void JunkLog(string jnk)
+        {
+            jnk = jnk + (jnk.EndsWith(Environment.NewLine) ? "" : Environment.NewLine);
+            if (bool.Parse(Config["JunkLog"]))
+            {
+                File.AppendAllText(FpJunkLog, jnk);
+            }
+            Console.Write($"JUNK: {jnk}");
         }
         private void JunkLog(JunkPost pst)
         {
-            if (bool.Parse(Config["JunkLog"]))
-            {
-                File.AppendAllText(FpJunkLog, pst.ToString() + Environment.NewLine);
-            }
+            JunkLog(pst.ToString());
         }
         private void InterestingLog(InterestingComment cmt)
         {
-            if (bool.Parse(Config["InterestingLog"]))
-            {
-                File.AppendAllText(FpInterestingLog, cmt.ToString() + Environment.NewLine);
-            }
+            InterestingLog(cmt.ToString());
         }
         private void JunkLog(JunkComment cmt)
         {
-            if (bool.Parse(Config["JunkLog"]))
-            {
-                File.AppendAllText(FpJunkLog, cmt.ToString() + Environment.NewLine);
-            }
+            JunkLog(cmt.ToString());
         }
         private string FpInterestingLog => Path.Combine(Environment.CurrentDirectory, "interesting.txt");
         private string FpJunkLog => Path.Combine(Environment.CurrentDirectory, "junk.txt");
